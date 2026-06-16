@@ -1,0 +1,19 @@
+streamlit>=1.33
+pandas>=2.0
+numpy>=1.24
+yfinance>=0.2.40
+plotly>=5.20
+pyyaml>=6.0
+pyarrow>=14.0
+pytest>=8.0
+# Optional but recommended: exact, self-updating NYSE trading calendar
+# (holidays + early closes) for the market-open check. The app falls back to a
+# built-in holiday list if this is not installed.
+#
+# Python 3.9 note: install pinned, WITHOUT deps, because 4.3.3's metadata
+# over-conservatively caps pandas<2.0 (the code works fine with pandas 2.x) and
+# 4.4+ uses 3.10-only syntax:
+#     pip install --no-deps pandas_market_calendars==4.3.3 exchange_calendars \
+#         korean-lunar-calendar pyluach toolz
+# On Python >=3.10 just use:  pip install pandas_market_calendars
+pandas_market_calendars; python_version >= "3.10"

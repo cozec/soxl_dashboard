@@ -1,0 +1,63 @@
+# SOXL Live Dashboard configuration
+
+ticker: SOXL
+
+# Default data source. One of: yfinance, alpaca, polygon, tradier
+# Only yfinance is implemented out of the box; the others are stubs that
+# show how to plug in a real-time feed (see src/data_loader.py).
+data_source: yfinance
+
+# Timezone used for display of intraday timestamps.
+timezone: America/New_York
+
+# Auto-refresh interval for the dashboard, in seconds.
+refresh_interval_seconds: 60
+
+# Local cache directory (relative to project root).
+cache_dir: data/cache
+
+# Supported timeframes. Each maps a label to a yfinance (period, interval)
+# pair plus a human-friendly description.
+timeframes:
+  "1D / 1m":   {period: "1d",  interval: "1m",  intraday: true}
+  "5D / 5m":   {period: "5d",  interval: "5m",  intraday: true}
+  "1M / 30m":  {period: "1mo", interval: "30m", intraday: true}
+  "3M / 1d":   {period: "3mo", interval: "1d",  intraday: false}
+  "6M / 1d":   {period: "6mo", interval: "1d",  intraday: false}
+  "1Y / 1d":   {period: "1y",  interval: "1d",  intraday: false}
+  "5Y / 1wk":  {period: "5y",  interval: "1wk", intraday: false}
+
+# Moving-average periods (in candles/bars of the selected timeframe).
+moving_averages: [20, 50, 200]
+
+# Indicator parameters.
+indicators:
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  atr_period: 14
+  bb_period: 20
+  bb_std: 2.0
+  vol_ma_period: 20
+  hist_vol_windows: [20, 60]
+
+# Drawdown severity thresholds (negative fractions).
+drawdown_zones:
+  normal: -0.10      # 0% to -10%
+  correction: -0.25  # -10% to -25%
+  major: -0.50       # -25% to -50%
+  # below -50% is "crash"
+
+# Risk parameters.
+risk:
+  var_confidence: 0.95
+  trading_days_per_year: 252
+
+# Alert thresholds.
+alerts:
+  rsi_overbought: 75
+  rsi_oversold: 30
+  drawdown_levels: [-0.10, -0.25, -0.50]
+  relative_volume_spike: 2.0
+  daily_loss_threshold: -0.10
