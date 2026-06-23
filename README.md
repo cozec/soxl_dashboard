@@ -1,8 +1,13 @@
-# SOXL Live Dashboard
+# Semiconductor ETF Dashboard (SMH / SOXL)
 
-A live(-ish) Python dashboard for **SOXL**, the 3x leveraged semiconductor ETF.
+A live(-ish) Python dashboard for semiconductor ETFs, with one tab per ticker:
+
+- **SMH (1x)** — VanEck Semiconductor ETF (unleveraged underlying basket).
+- **SOXL (3x)** — the 3x leveraged semiconductor ETF.
+
 It focuses on price action, candlestick charting, drawdown from previous highs,
-technical indicators, regime classification, and leverage-aware risk monitoring.
+technical indicators, candlestick/entry signals, regime classification, and
+leverage-aware risk monitoring. Both tabs share one parameterized dashboard.
 
 > ⚠️ **SOXL is a 3x leveraged ETF.** It is designed for *daily* leveraged
 > exposure and can suffer from **volatility decay** over longer holding periods.
@@ -14,22 +19,42 @@ technical indicators, regime classification, and leverage-aware risk monitoring.
 
 - **Live price header** — current price, day change ($/%), prev close, open,
   high/low of day, volume, average volume, 52-week high/low, last-update time.
-- **Candlestick chart** — OHLC candles + volume subplot, 20/50/200 moving
-  averages, intraday VWAP, optional Bollinger Bands. All indicators toggle on/off.
+- **Combined zoomable chart** — price, volume, drawdown, RSI and MACD stacked in
+  **one shared-x-axis figure**, rendered through an embedded Plotly.js so it
+  behaves like Yahoo Finance:
+  - mouse-wheel **scroll-zoom**, **drag-pan**, double-click reset;
+  - **quick-zoom buttons** (1M / 3M / 6M / 1Y / 10Y / All);
+  - **y-axis auto-rescales** to the visible candles on every zoom/pan/button;
+  - the chart holds the **full loaded history**, with the timeframe as the
+    initial view, so zooming out reveals more history;
+  - y-axis labels on the right; OHLC candles with 20/50/200 MAs, shaded
+    Bollinger band, intraday VWAP, and a rolling-high step line.
+- **Candlestick / entry signals on the chart:**
+  - **Rolling-high stars** — a ★ on every bar that sets a new running high;
+  - **Buy-the-dip entry** — green ▲ markers + a header badge + a green alert
+    when, in an uptrend (>200-day MA), price tags the lower Bollinger Band or
+    pulls back to the 50-day MA;
+  - **Hanging-man** candles labelled with an arrowed textbox.
 - **Drawdown panel** — drawdown from the rolling high with shaded severity zones
   (normal / correction / major / crash), plus all-time-high, 52-week-high, and
   period-high metrics.
 - **Technical indicators** — trend (MAs + slope), momentum (RSI, MACD, ROC),
   volatility (ATR, historical vol, Bollinger width), volume (vol MA, relative
   volume, OBV), and risk distances from rolling highs.
-- **Signal/regime panel** — classifies SOXL into one of six regimes with a
+- **Signal/regime panel** — classifies the ticker into one of six regimes with a
   color badge and a plain-English rationale.
 - **Risk dashboard** — multi-horizon moves, annualized vol, historical 1-day
   95% VaR, worst 1/5/20-day losses, gap from prev close.
 - **Alerts** — MA crossovers, RSI extremes, drawdown thresholds, volume spikes,
-  large daily losses. Shown in-app; delivery is pluggable (email/SMS/Telegram).
+  large daily losses, and the buy-the-dip entry. Shown in-app; delivery is
+  pluggable (email/SMS/Telegram).
+- **Market-hours-aware auto-refresh** — refreshes only during the regular US
+  session (exact NYSE calendar via `pandas_market_calendars` when installed,
+  otherwise a built-in holiday list).
 - **Resilient data layer** — Parquet caching with graceful fallback to last
   cached data when the live fetch fails; clear "LIVE vs CACHED" status.
+- **Backtests** — event-study scripts under `scripts/` for the Bollinger-band
+  tag, candidate entry signals, and a step-aside strategy.
 
 ---
 
@@ -51,6 +76,10 @@ SOXL_dashboard/
         regime.py        # regime classification
         alerts.py        # alert engine + notifier interface
         charts.py        # Plotly figures
+    scripts/
+        backtest_bbands.py    # Bollinger-band tag event study
+        backtest_entry.py     # candidate entry-signal event study
+        backtest_strategy.py  # step-aside-after-tag strategy backtest
     tests/
         test_indicators.py
         test_drawdown.py
@@ -74,9 +103,23 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Use the **sidebar** to choose timeframe/interval, data source, indicator
-toggles, and the auto-refresh interval, or hit **Manual refresh** to force a
-new fetch.
+Switch between the **SMH** and **SOXL** tabs at the top. The chart opens on the
+default timeframe (3M / 1d) — use the **quick-zoom buttons** (1M…All) or
+scroll/drag to explore; the y-axis re-fits automatically. Defaults (timeframe,
+indicators, refresh interval, data source) live in `config.yaml`.
+
+## Backtests
+
+```bash
+.venv/bin/python scripts/backtest_bbands.py     # upper-band tag event study
+.venv/bin/python scripts/backtest_entry.py      # entry-signal event study
+.venv/bin/python scripts/backtest_strategy.py   # step-aside strategy vs buy&hold
+```
+
+These are analysis-only (they never feed the live app). The *signal* is causal;
+the *forward returns* they measure are, by design, look-ahead. Caveats are
+printed with the results: bull-heavy samples, no transaction costs/slippage, and
+no leverage-decay modelling for SOXL.
 
 ## Test
 
@@ -107,7 +150,7 @@ The data layer is built around a small `DataSource` interface in
 1. Implement `fetch(ticker, period, interval)` on the corresponding subclass so
    it returns a frame with `Open, High, Low, Close, Volume` columns.
 2. Add your API key (use Streamlit secrets / env vars — never commit keys).
-3. Set `data_source:` in `config.yaml` (or pick it in the sidebar).
+3. Set `data_source:` in `config.yaml`.
 
 Everything downstream (indicators, drawdown, risk, charts) is source-agnostic.
 
