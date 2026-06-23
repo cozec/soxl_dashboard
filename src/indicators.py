@@ -199,3 +199,71 @@ def latest_snapshot(df: pd.DataFrame, config: Dict) -> Dict[str, float]:
         roll_high = close.rolling(period, min_periods=1).max().iloc[-1]
         snap[label] = float(close.iloc[-1] / roll_high - 1.0)
     return snap
+
+
+# --------------------------------------------------------------------------
+# Entry signal
+# --------------------------------------------------------------------------
+def buy_dip_signal(df: pd.DataFrame) -> pd.Series:
+    """Boolean Series flagging 'buy the dip in an uptrend' entries.
+
+    Backtested as the best historical SOXL entry (see scripts/backtest_entry.py):
+    require an uptrend (close > 200-day MA) AND a pullback to support -- either a
+    tag of the lower Bollinger Band or a cross down to the 50-day MA. Causal:
+    uses only closed bars.
+    """
+    needed = {"Close", "sma_50", "sma_200", "bb_lower"}
+    if df is None or df.empty or not needed.issubset(df.columns):
+        idx = df.index if df is not None else None
+        return pd.Series([], dtype=bool, index=idx)
+    close = df["Close"]
+    uptrend = close > df["sma_200"]
+    lower_tag = close <= df["bb_lower"]
+    ma50_cross = (close.shift(1) > df["sma_50"].shift(1)) & (close <= df["sma_50"])
+    return (uptrend & (lower_tag | ma50_cross)).fillna(False)
+
+
+def hanging_man_signal(
+    df: pd.DataFrame,
+    body_max: float = 0.35,
+    lower_min_body: float = 2.0,
+    lower_min_range: float = 0.5,
+    upper_max: float = 0.20,
+    trend_lookback: int = 10,
+) -> pd.Series:
+    """Boolean Series flagging hanging-man candles.
+
+    Shape: small real body near the TOP of the range, a long lower shadow
+    (>= 2x the body and >= half the range), and little/no upper shadow, occurring
+    after an advance (close above where it was ``trend_lookback`` bars ago). The
+    same shape after a decline would be a bullish 'hammer'; the uptrend filter is
+    what makes it a (bearish) hanging man. Causal -- only closed bars.
+    """
+    if df is None or df.empty:
+        idx = df.index if df is not None else None
+        return pd.Series([], dtype=bool, index=idx)
+    o, h, l, c = df["Open"], df["High"], df["Low"], df["Close"]
+    rng = (h - l)
+    body = (c - o).abs()
+    upper = h - c.where(c >= o, o)          # high - max(open, close)
+    lower = o.where(o <= c, c) - l          # min(open, close) - low
+    valid = rng > 0
+    small_body = body <= body_max * rng
+    long_lower = (lower >= lower_min_body * body) & (lower >= lower_min_range * rng)
+    short_upper = upper <= upper_max * rng
+    uptrend = c > c.shift(trend_lookback)
+    return (valid & small_body & long_lower & short_upper & uptrend).fillna(False)
+
+
+def latest_entry(df: pd.DataFrame) -> Dict[str, Any]:
+    """Whether the most recent bar is a buy-the-dip entry, with a reason."""
+    sig = buy_dip_signal(df)
+    if sig.empty or not bool(sig.iloc[-1]):
+        return {"active": False, "reason": ""}
+    close = float(df["Close"].iloc[-1])
+    reasons = ["price above 200-day MA (uptrend)"]
+    if close <= float(df["bb_lower"].iloc[-1]):
+        reasons.append("tagged the lower Bollinger Band")
+    if close <= float(df["sma_50"].iloc[-1]):
+        reasons.append("pulled back to the 50-day MA")
+    return {"active": True, "reason": "; ".join(reasons)}

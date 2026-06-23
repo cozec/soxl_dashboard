@@ -15,7 +15,9 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
-SEVERITY_ORDER = {"info": 0, "warning": 1, "critical": 2}
+from . import indicators
+
+SEVERITY_ORDER = {"success": 0, "info": 0, "warning": 1, "critical": 2}
 
 
 @dataclass
@@ -134,6 +136,13 @@ def evaluate(
     move_1d = risk.get("move_1d")
     if move_1d is not None and move_1d == move_1d and move_1d <= acfg["daily_loss_threshold"]:
         alerts.append(Alert("daily_loss", f"Daily move {move_1d*100:.1f}% (loss exceeds {acfg['daily_loss_threshold']*100:.0f}%).", "critical"))
+
+    # --- Buy-the-dip entry signal (backtested; see scripts/backtest_entry.py)
+    entry = indicators.latest_entry(df)
+    if entry["active"]:
+        alerts.append(Alert("entry_buy_dip",
+                            f"Entry signal — buy the dip: {entry['reason']}.",
+                            "success"))
 
     alerts.sort(key=lambda a: SEVERITY_ORDER.get(a.severity, 0), reverse=True)
     return alerts

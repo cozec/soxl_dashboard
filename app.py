@@ -7,7 +7,9 @@ from __future__ import annotations
 from typing import Any, Dict
 
 import pandas as pd
+import plotly.io as pio
 import streamlit as st
+import streamlit.components.v1 as components
 
 from src import (
     alerts as alerts_mod,
@@ -69,8 +71,13 @@ def _cached_load(period: str, interval: str, intraday: bool, source: str,
     res = data_loader.load_ohlcv(config, fetch_period, interval, source)
     full = indicators.compute_all(res.df, config, intraday)
     disp = _slice_display(full, period, intraday)
+    # ``full`` powers the zoomable chart (zoom-out reveals more history);
+    # ``disp`` (the selected timeframe) drives the period-scoped metric panels.
+    disp_start = disp.index[0] if not disp.empty else None
+    disp_end = disp.index[-1] if not disp.empty else None
     return {
-        "df": disp, "source": res.source, "is_live": res.is_live,
+        "df": disp, "full": full, "disp_start": disp_start, "disp_end": disp_end,
+        "source": res.source, "is_live": res.is_live,
         "fetched_at": res.fetched_at, "note": res.note, "quote": res.quote,
     }
 
@@ -93,14 +100,14 @@ _METRIC_CSS = """
 
 def metric_row(quote: Dict[str, Any], dd_summary: Dict[str, Any],
                regime: regime_mod.RegimeResult, res: Dict[str, Any],
-               tz: str) -> None:
+               tz: str, ticker: str = "SOXL") -> None:
     st.markdown(_METRIC_CSS, unsafe_allow_html=True)
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("SOXL", utils.fmt_price(quote.get("price")))
+    c1.metric(ticker, utils.fmt_price(quote.get("price")))
     c2.metric("Daily Change",
               utils.fmt_price(quote.get("change")),
               utils.fmt_pct(quote.get("change_pct")))
-    c3.metric("DD from 52w High", utils.fmt_pct(dd_summary.get("drop_from_52w_high")))
+    c3.metric("DD from Rolling High", utils.fmt_pct(dd_summary.get("current_drawdown")))
     c4.markdown(
         f"<div style='font-size:0.78rem;color:#808495;font-weight:600'>Regime</div>"
         f"<span style='background:{regime.color};color:white;display:inline-block;"
@@ -137,66 +144,142 @@ def snapshot_row(quote: Dict[str, Any]) -> None:
         col.metric(label, value)
 
 
+def render_zoomable_chart(fig) -> None:
+    """Render *fig* via an embedded Plotly.js so the y-axis auto-rescales to the
+    visible candles on every zoom/pan (Yahoo-Finance style).
+
+    Mouse wheel zooms the x-axis, drag pans, double-click resets to the initial
+    timeframe view. After each x change we recompute each panel's y-range from
+    only the data points currently in view (skipping the fixed 0-100 RSI axis,
+    and pinning the volume axis to a 0 baseline).
+    """
+    fig_json = pio.to_json(fig)
+    height = int(fig.layout.height or 800)
+    html = """
+<div id="chart" style="width:100%;"></div>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script>
+const FIG = __FIG_JSON__;
+const gd = document.getElementById('chart');
+Plotly.newPlot(gd, FIG.data, FIG.layout,
+  {scrollZoom:true, displaylogo:false, responsive:true, doubleClick:'reset'});
+let busy = false;
+function currentXRange(ev) {
+  // Prefer the range carried in the relayout event (rangeselector buttons and
+  // zoom send it here before it is committed to _fullLayout); fall back to the
+  // committed layout range otherwise.
+  if (ev) {
+    if ('xaxis.range[0]' in ev) return [ev['xaxis.range[0]'], ev['xaxis.range[1]']];
+    if (ev['xaxis.range']) return ev['xaxis.range'];
+  }
+  const xa = gd._fullLayout.xaxis;
+  return xa && xa.range;
+}
+function autoscale(ev) {
+  const xr = currentXRange(ev); if (!xr) return;
+  const x0 = new Date(xr[0]).getTime(), x1 = new Date(xr[1]).getTime();
+  const axes = {};
+  gd.data.forEach(function(tr) {
+    const ax = tr.yaxis || 'y';
+    const lk = 'yaxis' + (ax === 'y' ? '' : ax.slice(1));
+    const rng = gd.layout[lk] && gd.layout[lk].range;
+    if (rng && rng[0] === 0 && rng[1] === 100) return;  // RSI: leave fixed
+    if (!axes[ax]) axes[ax] = {min: Infinity, max: -Infinity, types: {}};
+    const xs = tr.x;
+    for (let i = 0; i < xs.length; i++) {
+      const xi = new Date(xs[i]).getTime();
+      if (xi < x0 || xi > x1) continue;
+      if (tr.type === 'candlestick') {
+        axes[ax].types['candlestick'] = 1;
+        if (tr.low[i] < axes[ax].min) axes[ax].min = tr.low[i];
+        if (tr.high[i] > axes[ax].max) axes[ax].max = tr.high[i];
+      } else {
+        const y = tr.y[i];
+        if (y == null || isNaN(y)) continue;
+        axes[ax].types[tr.type || 'scatter'] = 1;
+        if (y < axes[ax].min) axes[ax].min = y;
+        if (y > axes[ax].max) axes[ax].max = y;
+      }
+    }
+  });
+  const upd = {};
+  Object.keys(axes).forEach(function(ax) {
+    const a = axes[ax]; if (a.min === Infinity) return;
+    const lk = 'yaxis' + (ax === 'y' ? '' : ax.slice(1));
+    const onlyBar = a.types['bar'] && !a.types['candlestick'] && !a.types['scatter'];
+    let lo = onlyBar ? 0 : a.min, hi = a.max;
+    const pad = (hi - lo) * 0.06 || Math.abs(hi) * 0.06 || 1;
+    upd[lk + '.range'] = [lo - (onlyBar ? 0 : pad), hi + pad];
+  });
+  if (Object.keys(upd).length === 0) return;
+  busy = true;
+  Plotly.relayout(gd, upd).then(function() { busy = false; });
+}
+gd.on('plotly_relayout', function(ev) {
+  if (busy) return;
+  // Any x-axis change (zoom, pan, rangeselector button, double-click reset)
+  // re-fits the y-axes to what is now visible.
+  setTimeout(function() { autoscale(ev); }, 0);
+});
+setTimeout(function() { autoscale(); }, 80);
+</script>
+""".replace("__FIG_JSON__", fig_json)
+    components.html(html, height=height + 20, scrolling=False)
+
+
 # Stretch the main content to the full monitor width (Streamlit's "wide"
 # layout still caps width and adds large side padding by default).
 _FULLWIDTH_CSS = """
 <style>
+/* Hide Streamlit's top toolbar (Deploy button + hamburger menu). */
+[data-testid="stHeader"] { display: none; }
+[data-testid="stToolbar"] { display: none; }
+#MainMenu { visibility: hidden; }
 .block-container,
 [data-testid="stMainBlockContainer"] {
     max-width: 100% !important;
     padding-left: 1.5rem !important;
     padding-right: 1.5rem !important;
-    padding-top: 1.5rem !important;
+    padding-top: 0.6rem !important;
 }
 </style>
 """
 
 
-def main() -> None:
-    config = utils.load_config()
+# Per-ticker header note shown under the title.
+TICKER_NOTES = {
+    "SOXL": risk_metrics.LEVERAGE_WARNING,
+    "SMH": ("SMH is an unleveraged semiconductor ETF (VanEck Semiconductor) — "
+            "the kind of underlying basket that 3x funds like SOXL track."),
+}
+
+
+def render_dashboard(base_config: Dict[str, Any], ticker: str) -> None:
+    """Render the full dashboard for *ticker*. Widget keys are namespaced by
+    ticker so the same controls can appear on multiple tabs without colliding."""
+    config = dict(base_config)
+    config["ticker"] = ticker
     tz = config["timezone"]
-    st.markdown(_FULLWIDTH_CSS, unsafe_allow_html=True)
+    k = ticker  # widget-key prefix
 
-    # ---------------- Controls (top panel, full-width) ------------------
-    # Kept out of the sidebar so the dashboard spans the full page width.
+    # ---------------- Fixed defaults (Controls panel removed) -----------
     tf_labels = list(config["timeframes"].keys())
-    with st.expander("⚙️ Controls", expanded=True):
-        r1c1, r1c2, r1c3, r1c4 = st.columns([2, 2, 2, 1])
-        tf_label = r1c1.selectbox("Timeframe / Interval", tf_labels, index=3)
-        tf = config["timeframes"][tf_label]
-        intraday = tf["intraday"]
-        source = r1c2.selectbox(
-            "Data source", ["yfinance", "alpaca", "polygon", "tradier"],
-            index=0, help="Only yfinance is implemented; others are stubs.")
-        refresh = r1c3.slider("Auto-refresh (seconds)", 0, 120,
-                              int(config["refresh_interval_seconds"]), step=10,
-                              help="0 disables auto-refresh. Paused when market is closed.")
-        r1c4.write("")  # vertical spacer to align the button with the inputs
-        refresh_token = 0
-        if r1c4.button("🔄 Refresh", use_container_width=True):
-            _cached_load.clear()
-            refresh_token = 1
-
-        st.markdown("**Indicators**")
-        icols = st.columns(6)
-        show_ma = [
-            p for i, p in enumerate(config["moving_averages"])
-            if icols[i].checkbox(f"MA {p}", value=(p != 200 or not intraday))
-        ]
-        show_vwap = icols[3].checkbox("VWAP (intraday)", value=intraday, disabled=not intraday)
-        show_bbands = icols[4].checkbox("Bollinger Bands", value=True)
-        show_rsi = icols[5].checkbox("RSI", value=True)
-
-    if refresh and refresh > 0:
-        try:
-            st.autorefresh = st.experimental_rerun  # noqa
-        except Exception:
-            pass
+    tf_label = tf_labels[3]               # "3M / 1d"
+    tf = config["timeframes"][tf_label]
+    intraday = tf["intraday"]
+    source = config.get("data_source", "yfinance")
+    refresh = int(config["refresh_interval_seconds"])
+    refresh_token = 0
+    show_ma = list(config["moving_averages"])
+    show_vwap = intraday
+    show_bbands = True
+    show_rsi = True
 
     # ---------------- Load data (indicators already computed) -----------
     res = _cached_load(tf["period"], tf["interval"], intraday, source,
                        refresh_token, config)
-    df = res["df"]
+    df = res["df"]            # selected timeframe -> period-scoped metrics
+    full = res["full"]        # full loaded history -> zoomable chart
     quote = res["quote"]
 
     if res["note"]:
@@ -208,9 +291,6 @@ def main() -> None:
         st.stop()
 
     # ---------------- Compute period-scoped metrics ---------------------
-    # Indicators (MAs etc.) were computed on full history then sliced, so they
-    # are warmed up. Drawdown/risk below are intentionally over the displayed
-    # window only.
     market_open = utils.is_market_open(tz)
     snapshot = indicators.latest_snapshot(df, config)
     dd_summary = dd_mod.drawdown_summary(df, quote)
@@ -221,20 +301,26 @@ def main() -> None:
     triggered = alerts_mod.evaluate(df, quote, risk, config)
 
     # ---------------- Top row -------------------------------------------
-    st.title("📈 SOXL Live Dashboard")
-    metric_row(quote, dd_summary, regime, res, tz)
-    st.caption("⚠️ " + risk_metrics.LEVERAGE_WARNING)
+    st.title(f"📈 {ticker} Live Dashboard")
+    metric_row(quote, dd_summary, regime, res, tz, ticker=ticker)
+    entry = indicators.latest_entry(df)
+    if entry["active"]:
+        st.markdown(
+            "<span style='background:#2e7d32;color:white;padding:4px 12px;"
+            "border-radius:6px;font-weight:600'>🟢 ENTRY SIGNAL — buy the dip</span>"
+            f"&nbsp;&nbsp;<span style='color:#2e7d32'>{entry['reason']}</span>",
+            unsafe_allow_html=True)
+    st.caption("⚠️ " + TICKER_NOTES.get(ticker, f"{ticker} ETF."))
     st.divider()
 
-    # ---------------- Main chart (full width) ---------------------------
-    # Price, volume, RSI and MACD live in ONE figure with a shared x-axis so
-    # they pan/zoom/hover together.
-    st.subheader(f"Price — {tf_label}")
-    st.plotly_chart(
-        charts.price_stack_chart(df, config, intraday, show_ma, show_vwap,
-                                 show_bbands, show_rsi=show_rsi, show_macd=True,
-                                 show_drawdown=True, market_open=market_open),
-        use_container_width=True)
+    # ---------------- Main chart (full width, zoomable) -----------------
+    st.subheader(f"Price — {tf_label}  ·  scroll to zoom, drag to pan, double-click to reset")
+    fig = charts.price_stack_chart(
+        full, config, intraday, show_ma, show_vwap, show_bbands,
+        show_rsi=show_rsi, show_macd=True, show_drawdown=True,
+        market_open=market_open,
+        initial_xrange=(res["disp_start"], res["disp_end"]))
+    render_zoomable_chart(fig)
 
     # Snapshot as a horizontal metric strip beneath the charts.
     st.subheader("Snapshot")
@@ -279,24 +365,35 @@ def main() -> None:
         if not triggered:
             st.success("No alerts triggered.")
         for a in triggered:
-            icon = {"critical": "🔴", "warning": "🟠", "info": "🔵"}.get(a.severity, "⚪")
-            (st.error if a.severity == "critical" else
-             st.warning if a.severity == "warning" else st.info)(f"{icon} {a.message}")
+            icon = {"critical": "🔴", "warning": "🟠", "info": "🔵",
+                    "success": "🟢"}.get(a.severity, "⚪")
+            renderer = {"critical": st.error, "warning": st.warning,
+                        "success": st.success}.get(a.severity, st.info)
+            renderer(f"{icon} {a.message}")
 
         st.subheader("Regime rationale")
         for r in regime.reasons:
             st.write("• " + r)
 
     # ---------------- Auto-refresh --------------------------------------
-    # Only auto-refresh during regular US market hours -- there is no new data
-    # to fetch when the market is closed.
     if refresh and refresh > 0:
         if market_open:
             st.caption(f"🟢 Market open — auto-refreshing every {refresh}s.")
-            _auto_refresh(refresh)
+            _auto_refresh(refresh, key=f"{k}_autorefresh")
         else:
             st.caption("🔴 Market closed — auto-refresh paused. "
                        "Use the Refresh button to update.")
+
+
+def main() -> None:
+    utils.load_config()  # validate config exists early
+    config = utils.load_config()
+    st.markdown(_FULLWIDTH_CSS, unsafe_allow_html=True)
+    tab_smh, tab_soxl = st.tabs(["SMH (1x)", "SOXL (3x)"])
+    with tab_smh:
+        render_dashboard(config, "SMH")
+    with tab_soxl:
+        render_dashboard(config, "SOXL")
 
 
 def _indicator_table(snap: Dict[str, Any], risk: Dict[str, Any]) -> pd.DataFrame:
@@ -352,11 +449,11 @@ def _num(v, suffix: str = "") -> str:
     return f"{v:,.2f}{suffix}"
 
 
-def _auto_refresh(seconds: int) -> None:
+def _auto_refresh(seconds: int, key: str = "auto_refresh") -> None:
     """Trigger a rerun after *seconds*. Uses st.autorefresh when available."""
     fn = getattr(st, "autorefresh", None)
     if callable(fn):
-        fn(interval=seconds * 1000, key="auto_refresh")
+        fn(interval=seconds * 1000, key=key)
         return
     # Fallback for Streamlit builds without st.autorefresh.
     st.markdown(

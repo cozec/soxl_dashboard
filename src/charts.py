@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from . import drawdown as dd_mod
+from . import indicators as ind_mod
 
 _MA_COLORS = {20: "#1f77b4", 50: "#ff7f0e", 200: "#9467bd"}
 
@@ -148,7 +149,9 @@ def price_stack_chart(
     show_rsi: bool = True,
     show_macd: bool = True,
     show_drawdown: bool = True,
+    show_entries: bool = True,
     market_open: bool = False,
+    initial_xrange=None,
 ) -> go.Figure:
     """Price + volume + (optional) drawdown + RSI + MACD in ONE figure.
 
@@ -190,12 +193,17 @@ def price_stack_chart(
         fig.add_trace(go.Scatter(x=df.index, y=df["vwap"], name="VWAP",
                                  line=dict(width=1.3, color="#00bcd4", dash="dot")),
                       row=r, col=1)
-    if show_bbands and "bb_upper" in df.columns:
-        for col, dash in [("bb_upper", "dot"), ("bb_lower", "dot")]:
-            fig.add_trace(go.Scatter(x=df.index, y=df[col], name=col.replace("bb_", "BB "),
-                                     line=dict(width=1, color="rgba(150,150,150,0.7)", dash=dash),
-                                     showlegend=False),
-                          row=r, col=1)
+    if show_bbands and "bb_upper" in df.columns and "bb_lower" in df.columns:
+        # Upper band (no fill), then lower band filling up to it -> shaded band.
+        fig.add_trace(go.Scatter(x=df.index, y=df["bb_upper"], name="BB upper",
+                                 line=dict(width=0.8, color="rgba(150,150,150,0.45)"),
+                                 showlegend=False, hoverinfo="skip"),
+                      row=r, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df["bb_lower"], name="Bollinger Bands",
+                                 line=dict(width=0.8, color="rgba(150,150,150,0.45)"),
+                                 fill="tonexty", fillcolor="rgba(160,160,160,0.18)",
+                                 showlegend=True, hoverinfo="skip"),
+                      row=r, col=1)
 
     # Running (expanding) high = the exact reference the drawdown panel uses:
     # at each date it is max(Close) up to and including that date. Drawn as a
@@ -205,6 +213,17 @@ def price_stack_chart(
                              line=dict(width=1.1, color="#f2a900", dash="dash"),
                              line_shape="hv", showlegend=True),
                   row=r, col=1)
+    # Star every bar that SETS a new rolling high (where the step line steps up).
+    new_high = run_high.gt(run_high.shift(1))
+    if len(new_high) > 0:
+        new_high.iloc[0] = True  # the first bar establishes the initial high
+    if new_high.any():
+        fig.add_trace(go.Scatter(
+            x=df.index[new_high.values], y=run_high[new_high.values],
+            mode="markers", name="New High",
+            marker=dict(symbol="star", size=11, color="#f2a900",
+                        line=dict(width=0.6, color="#8a6d00"))),
+            row=r, col=1)
 
     # Annotations on the price row. The marker sits at the latest value of the
     # running high (= the window peak, since the peak is already in the past).
@@ -215,11 +234,44 @@ def price_stack_chart(
                        arrowcolor="#26a69a", ax=0, ay=-32, font=dict(color="#1b8a78", size=11),
                        bgcolor="rgba(255,255,255,0.7)")
     last_close = float(df["Close"].iloc[-1])
-    fig.add_annotation(x=df.index[-1], y=last_close, row=r, col=1,
-                       text=f"{'Current' if market_open else 'Close'} ${last_close:,.2f}",
-                       showarrow=True, arrowhead=2, arrowcolor="#ef5350", ax=38, ay=0,
-                       font=dict(color="#c0392b", size=11), bgcolor="rgba(255,255,255,0.7)")
-    fig.update_yaxes(title_text="Price", row=r, col=1)
+    dd_now = last_close / high_val - 1.0  # drawdown from the running high
+    # Close / drawdown shown as a static label in the empty top-right corner so
+    # it never overlaps the candles.
+    # Anchored to today's close with an arrow; text hangs down-LEFT into the
+    # empty area so it stays inside the plot (the last candle is at the right
+    # edge, so offsetting right would clip the box).
+    fig.add_annotation(
+        x=df.index[-1], y=last_close, row=r, col=1,
+        text=(f"{'Current' if market_open else 'Close'} ${last_close:,.2f}"
+              f"<br>DD from Rolling High {dd_now * 100:.1f}%"),
+        showarrow=True, arrowhead=2, arrowcolor="#c0392b", arrowwidth=1.3,
+        ax=-22, ay=55, xanchor="right", yanchor="top", align="right",
+        font=dict(color="#c0392b", size=11), bgcolor="rgba(255,255,255,0.75)")
+
+    # Buy-the-dip entry markers (green triangles just below the bar's low).
+    if show_entries:
+        entries = ind_mod.buy_dip_signal(df)
+        if not entries.empty and entries.any():
+            ex = df.index[entries.values]
+            ey = df["Low"][entries.values] * 0.985
+            fig.add_trace(go.Scatter(x=ex, y=ey, mode="markers", name="Entry (buy dip)",
+                                     marker=dict(symbol="triangle-up", size=11,
+                                                 color="#2e7d32",
+                                                 line=dict(width=0.5, color="white"))),
+                          row=r, col=1)
+
+    # Hanging-man candles: a small textbox with an arrow pointing down at each.
+    hm = ind_mod.hanging_man_signal(df)
+    if not hm.empty and hm.any():
+        hx = df.index[hm.values]
+        hy = df["High"][hm.values]
+        for x_, y_ in zip(hx, hy):
+            fig.add_annotation(
+                x=x_, y=float(y_), row=r, col=1, text="Hanging Man",
+                showarrow=True, arrowhead=2, arrowcolor="#e67e22", arrowwidth=1.2,
+                ax=-30, ay=-24, font=dict(color="#b35e10", size=9),
+                bgcolor="rgba(255,255,255,0.8)", bordercolor="#e67e22",
+                borderwidth=0.6, borderpad=1)
 
     # Volume.
     rv = row_of["vol"]
@@ -228,7 +280,6 @@ def price_stack_chart(
     fig.add_trace(go.Bar(x=df.index, y=df["Volume"], name="Volume",
                          marker_color=vol_colors, opacity=0.6, showlegend=False),
                   row=rv, col=1)
-    fig.update_yaxes(title_text="Vol", row=rv, col=1)
 
     # Drawdown from rolling high, with shaded severity zones.
     if show_drawdown:
@@ -248,7 +299,6 @@ def price_stack_chart(
         ]:
             fig.add_hrect(y0=y0, y1=y1, fillcolor=color, line_width=0,
                           layer="below", row=rd, col=1)
-        fig.update_yaxes(title_text="DD %", row=rd, col=1)
 
     # RSI.
     if show_rsi and "rsi" in df.columns:
@@ -258,7 +308,7 @@ def price_stack_chart(
                       row=rr, col=1)
         fig.add_hline(y=70, line=dict(color="#ef5350", width=1, dash="dash"), row=rr, col=1)
         fig.add_hline(y=30, line=dict(color="#26a69a", width=1, dash="dash"), row=rr, col=1)
-        fig.update_yaxes(title_text="RSI", range=[0, 100], row=rr, col=1)
+        fig.update_yaxes(range=[0, 100], row=rr, col=1)
 
     # MACD.
     if show_macd and "macd" in df.columns:
@@ -273,20 +323,116 @@ def price_stack_chart(
         fig.add_trace(go.Scatter(x=df.index, y=df["macd_signal"], name="Signal",
                                  line=dict(color="#ff7f0e", width=1.2), showlegend=False),
                       row=rm, col=1)
-        fig.update_yaxes(title_text="MACD", row=rm, col=1)
+
+    # Panel labels in the top-left corner of each subplot (replaces the y-axis
+    # titles, which ate horizontal space on the left).
+    panel_labels = {"price": "Price", "vol": "Vol", "dd": "DD %",
+                    "rsi": "RSI", "macd": "MACD"}
+    for name, rnum in row_of.items():
+        fig.add_annotation(
+            text=f"<b>{panel_labels[name]}</b>", row=rnum, col=1,
+            xref="x domain", yref="y domain", x=0.004, y=0.97,
+            xanchor="left", yanchor="top", showarrow=False,
+            font=dict(size=11, color="#666"), bgcolor="rgba(255,255,255,0.55)")
 
     fig.update_layout(
         # 2x taller panels: doubled the base + per-row heights.
         height=640 + 300 * (len(rows) - 1),
-        margin=dict(l=10, r=10, t=30, b=10),
+        # Y labels live on the right now, so keep the left margin tight.
+        # Extra top room for the quick-zoom buttons + legend.
+        margin=dict(l=8, r=52, t=52, b=10),
         xaxis_rangeslider_visible=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0),
         hovermode="x unified",
         bargap=0,
+        # Yahoo-style interaction: drag to pan, mouse-wheel to zoom
+        # (scrollZoom is enabled in the Streamlit render config).
+        dragmode="pan",
     )
+    # Y-axis tick labels on the RIGHT side (Yahoo-style); automargin reserves
+    # room so they aren't clipped.
+    fig.update_yaxes(side="right", automargin=True)
     # Single shared x-axis: apply gap rangebreaks to every panel.
     fig.update_xaxes(rangebreaks=_rangebreaks(df, intraday))
+    # Quick-zoom buttons above the price panel (client-side; they trigger the
+    # y-axis auto-rescale just like a manual zoom).
+    fig.update_xaxes(
+        rangeselector=dict(
+            buttons=[
+                dict(count=1, label="1M", step="month", stepmode="backward"),
+                dict(count=3, label="3M", step="month", stepmode="backward"),
+                dict(count=6, label="6M", step="month", stepmode="backward"),
+                dict(count=1, label="1Y", step="year", stepmode="backward"),
+                dict(count=10, label="10Y", step="year", stepmode="backward"),
+                dict(step="all", label="All"),
+            ],
+            x=1, xanchor="right", y=1.0, yanchor="bottom",
+            bgcolor="rgba(245,245,245,0.95)", activecolor="#d0d0d0",
+            bordercolor="#cccccc", borderwidth=1, font=dict(size=10),
+        ),
+        row=1, col=1,
+    )
+    # Initial visible window. If a range is supplied (the selected timeframe),
+    # use it -- zooming/panning out then reveals the rest of the loaded history.
+    # Pad the right edge by ~0.6 of a bar so the latest candle isn't clipped.
+    bar = (df.index[-1] - df.index[-2]) if len(df.index) >= 2 else None
+    if initial_xrange is not None:
+        start, end = initial_xrange
+        # Fit every panel's y-axis to the initially-visible window so the chart
+        # opens tight (like Yahoo) instead of auto-ranging over all history.
+        _set_initial_yranges(fig, df, row_of, start, end, show_ma, show_bbands,
+                             show_drawdown, show_macd)
+        if bar is not None and end is not None:
+            end = end + bar * 0.6
+        fig.update_xaxes(range=[start, end])
+    elif bar is not None:
+        fig.update_xaxes(range=[df.index[0], df.index[-1] + bar * 0.6])
     return fig
+
+
+def _set_initial_yranges(fig, df, row_of, start, end, show_ma, show_bbands,
+                         show_drawdown, show_macd) -> None:
+    """Set each panel's y-range from the data visible in [start, end]."""
+    vis = df[(df.index >= start) & (df.index <= end)]
+    if vis.empty:
+        return
+
+    def _pad(lo, hi):
+        p = (hi - lo) * 0.06 or abs(hi) * 0.06 or 1.0
+        return lo - p, hi + p
+
+    # Price panel: candles + shown MAs + Bollinger band + running high.
+    cols = ["High", "Low"]
+    cols += [f"sma_{p}" for p in show_ma if f"sma_{p}" in vis.columns]
+    if show_bbands:
+        cols += [c for c in ("bb_upper", "bb_lower") if c in vis.columns]
+    pv = vis[cols]
+    lo, hi = float(pv.min().min()), float(pv.max().max())
+    rh_vis = df["Close"].cummax()[(df.index >= start) & (df.index <= end)]
+    if not rh_vis.empty:
+        hi = max(hi, float(rh_vis.max()))
+    lo, hi = _pad(lo, hi)
+    fig.update_yaxes(range=[lo, hi], row=row_of["price"], col=1)
+
+    # Volume: 0-based.
+    fig.update_yaxes(range=[0, float(vis["Volume"].max()) * 1.06],
+                     row=row_of["vol"], col=1)
+
+    # Drawdown: visible minimum up to ~0.
+    if show_drawdown and "dd" in row_of:
+        dd_vis = (df["Close"] / df["Close"].cummax() - 1.0) * 100.0
+        dd_vis = dd_vis[(df.index >= start) & (df.index <= end)]
+        if not dd_vis.empty:
+            ddlo = float(dd_vis.min())
+            fig.update_yaxes(range=[ddlo - (abs(ddlo) * 0.06 or 1.0), 1.0],
+                             row=row_of["dd"], col=1)
+
+    # MACD.
+    if show_macd and "macd" in row_of and "macd" in vis.columns:
+        mc = [c for c in ("macd", "macd_signal", "macd_hist") if c in vis.columns]
+        mv = vis[mc]
+        mlo, mhi = _pad(float(mv.min().min()), float(mv.max().max()))
+        fig.update_yaxes(range=[mlo, mhi], row=row_of["macd"], col=1)
 
 
 def drawdown_chart(df: pd.DataFrame, config: Dict[str, Any]) -> go.Figure:
