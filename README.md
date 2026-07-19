@@ -121,6 +121,51 @@ the *forward returns* they measure are, by design, look-ahead. Caveats are
 printed with the results: bull-heavy samples, no transaction costs/slippage, and
 no leverage-decay modelling for SOXL.
 
+## Email notifier (signal alerts + daily digest)
+
+`src/notifier.py` emails you when the backtested signals fire — using the exact
+same functions the dashboard and backtests use (no re-implemented rules).
+
+```bash
+.venv/bin/python -m src.notifier --check --dry-run    # render near-close alert to stdout
+.venv/bin/python -m src.notifier --digest --dry-run   # render daily digest to stdout
+```
+
+- **`--check`** (12:45pm PT / 3:45pm ET): emails ONLY if a ticker fires the
+  buy-dip entry or overbought/trim rule on the nearly-final daily bar.
+- **`--digest`** (1:15pm PT / 4:15pm ET): always emails on trading days — a
+  per-ticker table (close / change / drawdown / RSI / signals), triggered
+  alerts, and a trailing-30-session **buy-dip scorecard** with realized
+  20-day forward returns ("open" when <20 sessions have elapsed).
+
+Guards: calendar-only trading-day check (weekends/holidays exit silently),
+a 4:30pm-ET deadline on `--check` (launchd replays missed jobs after Mac
+wake), a per-ticker freshness gate (cached/stale data is skipped, never
+alerted on), and same-day dedup via `data/alert_state.json`.
+
+**One-time setup:**
+
+1. Create a Gmail app password (myaccount.google.com → Security → App
+   passwords; requires 2-Step Verification) and put it in
+   `~/.config/soxl_dashboard/secrets.env`:
+   ```
+   GMAIL_ADDRESS=you@gmail.com
+   GMAIL_APP_PASSWORD=your-16-char-app-password
+   ```
+2. Install the schedules (edit the paths in the plists if the repo lives
+   elsewhere):
+   ```bash
+   cp launchd/com.soxl.notifier.*.plist ~/Library/LaunchAgents/
+   launchctl load ~/Library/LaunchAgents/com.soxl.notifier.check.plist
+   launchctl load ~/Library/LaunchAgents/com.soxl.notifier.digest.plist
+   ```
+3. Verify: `launchctl list | grep soxl` and check `logs/notifier.log` after
+   the first scheduled run. The digest doubles as a heartbeat — if it stops
+   arriving, the system is down (Mac asleep at 1:15pm PT is the usual cause).
+
+Recipient, signals, schedule deadline, and file paths are configured in the
+`notifier:` block of `config.yaml`; the ticker list is the shared `tabs:` list.
+
 ## Test
 
 ```bash

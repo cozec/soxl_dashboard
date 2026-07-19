@@ -6,3 +6,5 @@ data/cache/*.parquet
 data/cache/*.pkl
 .DS_Store
 .streamlit/secrets.toml
+data/alert_state.json
+logs/

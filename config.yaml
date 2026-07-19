@@ -11,7 +11,7 @@ data_source: yfinance
 timezone: America/New_York
 
 # Auto-refresh interval for the dashboard, in seconds.
-refresh_interval_seconds: 60
+refresh_interval_seconds: 300
 
 # Local cache directory (relative to project root).
 cache_dir: data/cache
@@ -61,3 +61,31 @@ alerts:
   drawdown_levels: [-0.10, -0.25, -0.50]
   relative_volume_spike: 2.0
   daily_loss_threshold: -0.10
+
+# Dashboard tabs as [label, ticker] pairs. Single source of truth shared by
+# app.py (tab bar) and src/notifier.py (which tickers to check).
+tabs:
+  - ["SMH (1x)", "SMH"]
+  - ["SOXL (3x)", "SOXL"]
+  - ["S&P500", "SPY"]
+  - ["QQQ", "QQQ"]
+  - ["TQQQ (3x)", "TQQQ"]
+  - ["MU", "MU"]
+  - ["SNDK", "SNDK"]
+  - ["MRVL", "MRVL"]
+  - ["INTC", "INTC"]
+
+# Email notifier (src/notifier.py; scheduled via launchd/*.plist).
+#   --check  near close: emails ONLY if a buy-dip/overbought signal fired
+#   --digest after close: always emails a per-ticker summary + scorecard
+notifier:
+  recipient: yadongwang@gmail.com
+  # env-style file with GMAIL_ADDRESS / GMAIL_APP_PASSWORD (never committed)
+  secrets_file: ~/.config/soxl_dashboard/secrets.env
+  signals: [buy_dip, overbought]
+  scorecard_sessions: 30        # trailing window replayed in the digest
+  state_file: data/alert_state.json   # same-day dedup for --check emails
+  log_file: logs/notifier.log
+  # --check refuses to email after this ET time (launchd replays missed jobs
+  # on wake; a stale "near-close" alert at 9pm would be wrong).
+  check_deadline_et: "16:30"

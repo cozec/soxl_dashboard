@@ -74,6 +74,20 @@ def _default_config() -> Dict[str, Any]:
             "relative_volume_spike": 2.0,
             "daily_loss_threshold": -0.10,
         },
+        "tabs": [
+            ["SMH (1x)", "SMH"], ["SOXL (3x)", "SOXL"], ["S&P500", "SPY"],
+            ["QQQ", "QQQ"], ["TQQQ (3x)", "TQQQ"], ["MU", "MU"],
+            ["SNDK", "SNDK"], ["MRVL", "MRVL"], ["INTC", "INTC"],
+        ],
+        "notifier": {
+            "recipient": "",
+            "secrets_file": "~/.config/soxl_dashboard/secrets.env",
+            "signals": ["buy_dip", "overbought"],
+            "scorecard_sessions": 30,
+            "state_file": "data/alert_state.json",
+            "log_file": "logs/notifier.log",
+            "check_deadline_et": "16:30",
+        },
     }
 
 
@@ -193,3 +207,38 @@ def _is_market_open_fallback(now: "pd.Timestamp") -> bool:
         return False
     minutes = now.hour * 60 + now.minute
     return 9 * 60 + 30 <= minutes < 16 * 60
+
+
+def trading_session(tz: str = "America/New_York",
+                    at: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+    """Calendar-only session info for the given date (ignores time of day).
+
+    Unlike ``is_market_open`` this answers "is *today* a trading day?" -- it
+    stays True after the close, so an after-close digest job is not suppressed.
+    Returns ``None`` on weekends/holidays, else a dict with:
+      * ``close``: the session close as a tz-aware Timestamp (16:00 regular);
+      * ``early_close``: True on half days (1pm ET closes) -- only detectable
+        via pandas_market_calendars; the fallback always reports False.
+    """
+    now = pd.Timestamp(at).tz_convert(tz) if at is not None else pd.Timestamp.now(tz=tz)
+    try:
+        import pandas_market_calendars as mcal
+        cal = mcal.get_calendar("NYSE")
+        day = now.strftime("%Y-%m-%d")
+        sched = cal.schedule(start_date=day, end_date=day)
+        if sched.empty:                       # weekend or holiday
+            return None
+        close_ts = sched.iloc[0]["market_close"].tz_convert(tz)
+        return {"close": close_ts, "early_close": bool(close_ts.hour < 16)}
+    except Exception:
+        pass
+    # Fallback: weekday + static holiday list, fixed 16:00 close.
+    if now.weekday() >= 5 or now.strftime("%Y-%m-%d") in _US_MARKET_HOLIDAYS:
+        return None
+    close_ts = now.normalize() + pd.Timedelta(hours=16)
+    return {"close": close_ts, "early_close": False}
+
+
+def is_trading_day(tz: str = "America/New_York", at: Optional[datetime] = None) -> bool:
+    """True if the date (in *tz*) is a NYSE trading day, regardless of hour."""
+    return trading_session(tz, at) is not None

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Near-close signal check: 12:45pm PT (3:45pm ET), Mon-Fri.
+       Emails ONLY if a buy-dip/overbought signal fired. The notifier itself
+       skips holidays and refuses to email after 4:30pm ET (launchd replays
+       missed jobs on wake; see src/notifier.py). -->
+  <key>Label</key>
+  <string>com.soxl.notifier.check</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/adam/project/SOXL_dashboard/.venv/bin/python</string>
+    <string>-m</string>
+    <string>src.notifier</string>
+    <string>--check</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/adam/project/SOXL_dashboard</string>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>12</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>12</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>12</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>12</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>12</integer><key>Minute</key><integer>45</integer></dict>
+  </array>
+  <key>StandardOutPath</key>
+  <string>/Users/adam/project/SOXL_dashboard/logs/launchd.check.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/adam/project/SOXL_dashboard/logs/launchd.check.log</string>
+</dict>
+</plist>

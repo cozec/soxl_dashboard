@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Daily digest: 1:15pm PT (4:15pm ET), Mon-Fri. Always emails on trading
+       days (per-ticker table + buy-dip scorecard); skips weekends/holidays.
+       May send late after a Mac wake -- final closed bars stay correct. -->
+  <key>Label</key>
+  <string>com.soxl.notifier.digest</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/adam/project/SOXL_dashboard/.venv/bin/python</string>
+    <string>-m</string>
+    <string>src.notifier</string>
+    <string>--digest</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/adam/project/SOXL_dashboard</string>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>15</integer></dict>
+  </array>
+  <key>StandardOutPath</key>
+  <string>/Users/adam/project/SOXL_dashboard/logs/launchd.digest.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/adam/project/SOXL_dashboard/logs/launchd.digest.log</string>
+</dict>
+</plist>
