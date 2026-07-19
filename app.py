@@ -58,7 +58,7 @@ def _slice_display(df: pd.DataFrame, period: str, intraday: bool) -> pd.DataFram
     return df[df.index >= end - off]
 
 
-@st.cache_data(show_spinner=False, ttl=30)
+@st.cache_data(show_spinner=False, ttl=300)
 def _cached_load(period: str, interval: str, intraday: bool, source: str,
                  _cfg_id: int, config: Dict[str, Any]) -> Dict[str, Any]:
     """Fetch extended history, compute indicators on it, slice to the window.
@@ -118,11 +118,15 @@ def metric_row(quote: Dict[str, Any], dd_summary: Dict[str, Any],
     # Source: provider name big, live/cached state as the delta line.
     c5.metric("Source", res["source"], "LIVE" if res["is_live"] else "CACHED",
               delta_color="normal" if res["is_live"] else "off")
-    # Last update: time-of-day big, date underneath.
+    # Last update: time-of-day big, date underneath -- shown in Pacific time.
     fetched = res["fetched_at"]
     if hasattr(fetched, "strftime"):
-        c6.metric("Last Update", fetched.strftime("%H:%M:%S"),
-                  fetched.strftime("%Y-%m-%d"), delta_color="off")
+        ts = pd.Timestamp(fetched)
+        ts = ts.tz_localize(tz) if ts.tzinfo is None else ts
+        ts = ts.tz_convert("America/Los_Angeles")
+        tzlabel = "PDT" if ts.dst() else "PST"
+        c6.metric("Last Update", f"{ts.strftime('%H:%M:%S')} {tzlabel}",
+                  ts.strftime("%Y-%m-%d"), delta_color="off")
     else:
         c6.metric("Last Update", str(fetched))
 
@@ -161,9 +165,12 @@ def render_zoomable_chart(fig) -> None:
 <script>
 const FIG = __FIG_JSON__;
 const gd = document.getElementById('chart');
-Plotly.newPlot(gd, FIG.data, FIG.layout,
-  {scrollZoom:true, displaylogo:false, responsive:true, doubleClick:'reset'});
 let busy = false;
+let lastW = 0;
+function doResize() {
+  const w = gd.clientWidth || 0;
+  if (w > 0 && Math.abs(w - lastW) > 2) { lastW = w; try { Plotly.Plots.resize(gd); } catch (e) {} }
+}
 function currentXRange(ev) {
   // Prefer the range carried in the relayout event (rangeselector buttons and
   // zoom send it here before it is committed to _fullLayout); fall back to the
@@ -175,6 +182,10 @@ function currentXRange(ev) {
   const xa = gd._fullLayout.xaxis;
   return xa && xa.range;
 }
+// Plotly (>=2.x) serializes numeric arrays as base64 typed-array objects
+// ({dtype, bdata, _inputArray}) rather than plain JS arrays, so tr.low[i] /
+// tr.y[i] are undefined. Resolve the decoded values via _inputArray.
+function vals(a) { return (a && a._inputArray) ? a._inputArray : a; }
 function autoscale(ev) {
   const xr = currentXRange(ev); if (!xr) return;
   const x0 = new Date(xr[0]).getTime(), x1 = new Date(xr[1]).getTime();
@@ -185,16 +196,17 @@ function autoscale(ev) {
     const rng = gd.layout[lk] && gd.layout[lk].range;
     if (rng && rng[0] === 0 && rng[1] === 100) return;  // RSI: leave fixed
     if (!axes[ax]) axes[ax] = {min: Infinity, max: -Infinity, types: {}};
-    const xs = tr.x;
+    const xs = vals(tr.x); if (!xs || !xs.length) return;
+    const lows = vals(tr.low), highs = vals(tr.high), ys = vals(tr.y);
     for (let i = 0; i < xs.length; i++) {
       const xi = new Date(xs[i]).getTime();
       if (xi < x0 || xi > x1) continue;
       if (tr.type === 'candlestick') {
         axes[ax].types['candlestick'] = 1;
-        if (tr.low[i] < axes[ax].min) axes[ax].min = tr.low[i];
-        if (tr.high[i] > axes[ax].max) axes[ax].max = tr.high[i];
+        if (lows[i] < axes[ax].min) axes[ax].min = lows[i];
+        if (highs[i] > axes[ax].max) axes[ax].max = highs[i];
       } else {
-        const y = tr.y[i];
+        const y = ys[i];
         if (y == null || isNaN(y)) continue;
         axes[ax].types[tr.type || 'scatter'] = 1;
         if (y < axes[ax].min) axes[ax].min = y;
@@ -215,13 +227,25 @@ function autoscale(ev) {
   busy = true;
   Plotly.relayout(gd, upd).then(function() { busy = false; });
 }
-gd.on('plotly_relayout', function(ev) {
-  if (busy) return;
-  // Any x-axis change (zoom, pan, rangeselector button, double-click reset)
-  // re-fits the y-axes to what is now visible.
-  setTimeout(function() { autoscale(ev); }, 0);
-});
-setTimeout(function() { autoscale(); }, 80);
+// Defer the FIRST render until the container actually has width. Inactive
+// Streamlit tabs render at width ~0, which permanently crams the legend; by
+// waiting we guarantee the initial layout happens at full width.
+function init() {
+  if (!gd.clientWidth) { setTimeout(init, 100); return; }
+  lastW = gd.clientWidth;
+  Plotly.newPlot(gd, FIG.data, FIG.layout,
+    {scrollZoom: true, displaylogo: false, responsive: true, doubleClick: 'reset'});
+  gd.on('plotly_relayout', function(ev) {
+    if (busy) return;
+    // Any x change (zoom, pan, rangeselector, reset) re-fits the y-axes.
+    setTimeout(function() { autoscale(ev); }, 0);
+  });
+  window.addEventListener('resize', doResize);
+  if (window.ResizeObserver) { new ResizeObserver(doResize).observe(gd); }
+  setInterval(doResize, 600);           // catch later width changes cheaply
+  setTimeout(function() { autoscale(); }, 60);
+}
+init();
 </script>
 """.replace("__FIG_JSON__", fig_json)
     components.html(html, height=height + 20, scrolling=False)
@@ -246,21 +270,89 @@ _FULLWIDTH_CSS = """
 """
 
 
-# Per-ticker header note shown under the title.
-TICKER_NOTES = {
-    "SOXL": risk_metrics.LEVERAGE_WARNING,
-    "SMH": ("SMH is an unleveraged semiconductor ETF (VanEck Semiconductor) — "
-            "the kind of underlying basket that 3x funds like SOXL track."),
-}
+# Cap on how many bars get embedded in the (inlined) chart JSON. ~10 years of
+# daily bars -- covers every quick-zoom button up to 10Y while keeping the
+# payload small enough to load fast.
+CHART_MAX_BARS = 2600
 
 
-def render_dashboard(base_config: Dict[str, Any], ticker: str) -> None:
+# Plain-language glossary of every technical term / marker shown on a tab.
+_GLOSSARY_MD = """
+#### 📈 Chart markers & signals
+
+- **🟢 Entry (buy the dip)** — green triangle / header badge. Fires when the
+  stock is in an **uptrend** (close above the 200-day MA) *and* has **pulled
+  back to support** — either tagging the lower Bollinger Band or crossing down
+  to the 50-day MA. A dip-buy *within* an uptrend, not a bottom-caller.
+- **Overbought** (red) — the close **crosses up through the upper Bollinger
+  Band while RSI > 75**. A **trim / caution** flag, *not* a hard sell:
+  historically it only precedes a mild ~1-week pullback and does **not** avoid
+  the deep drawdowns, so use it to resist chasing an extended move.
+- **Hammer** 🔨 — a candle with a small real body near the **top** of the range
+  and a **long lower shadow** (≥ 2× the body). Appearing *after a decline*, it's
+  a **bullish reversal** hint: sellers pushed price down intraday but buyers
+  reclaimed most of it by the close.
+- **Hanging Man** — the *same shape* as a hammer, but appearing *after a rise*.
+  It's a **bearish warning**: the long lower tail shows selling pressure is
+  starting to appear near the highs.
+- **Dragonfly Doji** — open ≈ close (essentially **no body**) at the top of the
+  range, with a long lower shadow. A stronger **indecision / potential bullish
+  reversal** signal — the day's lows were completely rejected. (Distinct from a
+  hammer, which still has a small real body.)
+- **Running / Rolling High** — dashed step line marking the **highest close so
+  far**. Drawdown is measured as the % drop from this line.
+
+*Single-candle patterns are weak on their own — treat them as context, and wait
+for the next bar to confirm.*
+
+#### 🧮 Indicators
+
+- **MA 20 / 50 / 200** — simple **moving averages** of the closing price over
+  20/50/200 bars. Price above all three = uptrend; the 200-day is the key
+  long-term trend line.
+- **RSI 14** — **Relative Strength Index** (0–100) momentum oscillator.
+  > 70 = overbought, < 30 = oversold.
+- **MACD** — **Moving Average Convergence Divergence**: the 12- vs 26-period
+  EMA gap (MACD line) against its 9-period **signal** line. MACD crossing above
+  signal = bullish momentum; the **histogram** is the gap between them.
+- **Bollinger Bands** — MA20 **± 2 standard deviations**. Wide bands = high
+  volatility; a tag of the lower band = a stretched pullback.
+- **ATR 14** — **Average True Range**: the typical daily price move, in dollars
+  (a volatility gauge).
+- **Historical / realized volatility** — annualized standard deviation of daily
+  returns (how choppy the stock is).
+- **ROC 5 / 20 / 60d** — **Rate of Change**: the % return over the last N days.
+- **OBV** — **On-Balance Volume**: a running total that adds volume on up days
+  and subtracts it on down days (tracks buying vs selling pressure).
+- **BB width** — width of the Bollinger Bands relative to price (a squeeze/expansion gauge).
+
+#### 🛡️ Risk terms
+
+- **Drawdown (DD)** — % decline from the rolling high. "Max DD" is the worst
+  such drop over the period.
+- **VaR (95%)** — **Value at Risk**: the 1-day loss that was exceeded on only
+  5% of historical days (a tail-risk estimate).
+- **Regime** — an overall trend label (Strong Uptrend / Neutral / …) combining
+  the moving averages, RSI, drawdown, and volatility.
+"""
+
+
+def render_glossary() -> None:
+    """Collapsible plain-language glossary of the TA terms used on the page."""
+    with st.expander("📖 Glossary — what these terms mean"):
+        st.markdown(_GLOSSARY_MD)
+
+
+def render_dashboard(base_config: Dict[str, Any], ticker: str,
+                     key_prefix: str = None) -> None:
     """Render the full dashboard for *ticker*. Widget keys are namespaced by
-    ticker so the same controls can appear on multiple tabs without colliding."""
+    ticker (or *key_prefix*) so the same controls can appear on multiple tabs
+    without colliding -- pass a distinct ``key_prefix`` when a tab may render a
+    ticker that another tab already shows (e.g. the Custom tab)."""
     config = dict(base_config)
     config["ticker"] = ticker
     tz = config["timezone"]
-    k = ticker  # widget-key prefix
+    k = key_prefix or ticker  # widget-key prefix
 
     # ---------------- Fixed defaults (Controls panel removed) -----------
     tf_labels = list(config["timeframes"].keys())
@@ -310,13 +402,17 @@ def render_dashboard(base_config: Dict[str, Any], ticker: str) -> None:
             "border-radius:6px;font-weight:600'>🟢 ENTRY SIGNAL — buy the dip</span>"
             f"&nbsp;&nbsp;<span style='color:#2e7d32'>{entry['reason']}</span>",
             unsafe_allow_html=True)
-    st.caption("⚠️ " + TICKER_NOTES.get(ticker, f"{ticker} ETF."))
     st.divider()
 
     # ---------------- Main chart (full width, zoomable) -----------------
-    st.subheader(f"Price — {tf_label}  ·  scroll to zoom, drag to pan, double-click to reset")
+    _dd = dd_summary.get("current_drawdown")
+    st.subheader(
+        f"{ticker} — DD from Rolling High :red-background[**{utils.fmt_pct(_dd)}**]")
+    # PERF: cap the embedded history (the chart is inlined as JSON for BOTH
+    # tabs). ~10 years of daily bars covers the 1M..10Y quick-zoom buttons.
+    chart_df = full.tail(CHART_MAX_BARS)
     fig = charts.price_stack_chart(
-        full, config, intraday, show_ma, show_vwap, show_bbands,
+        chart_df, config, intraday, show_ma, show_vwap, show_bbands,
         show_rsi=show_rsi, show_macd=True, show_drawdown=True,
         market_open=market_open,
         initial_xrange=(res["disp_start"], res["disp_end"]))
@@ -375,6 +471,10 @@ def render_dashboard(base_config: Dict[str, Any], ticker: str) -> None:
         for r in regime.reasons:
             st.write("• " + r)
 
+    # ---------------- Glossary ------------------------------------------
+    st.divider()
+    render_glossary()
+
     # ---------------- Auto-refresh --------------------------------------
     if refresh and refresh > 0:
         if market_open:
@@ -389,11 +489,20 @@ def main() -> None:
     utils.load_config()  # validate config exists early
     config = utils.load_config()
     st.markdown(_FULLWIDTH_CSS, unsafe_allow_html=True)
-    tab_smh, tab_soxl = st.tabs(["SMH (1x)", "SOXL (3x)"])
-    with tab_smh:
-        render_dashboard(config, "SMH")
-    with tab_soxl:
-        render_dashboard(config, "SOXL")
+    # Tab list lives in config.yaml ("tabs") -- shared with src/notifier.py.
+    tickers = [(label, ticker) for label, ticker in config["tabs"]]
+    tabs = st.tabs([label for label, _ in tickers] + ["🔎 Custom"])
+    for tab, (_, ticker) in zip(tabs, tickers):
+        with tab:
+            render_dashboard(config, ticker)
+    with tabs[-1]:
+        sym = st.text_input("Enter a ticker symbol",
+                            placeholder="e.g. AAPL, NVDA, TSLA, BTC-USD",
+                            key="custom_ticker").strip().upper()
+        if sym:
+            render_dashboard(config, sym, key_prefix="custom")
+        else:
+            st.info("Type any ticker symbol above to load its dashboard.")
 
 
 def _indicator_table(snap: Dict[str, Any], risk: Dict[str, Any]) -> pd.DataFrame:

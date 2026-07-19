@@ -177,6 +177,14 @@ def price_stack_chart(
         fig.update_layout(title="No data available")
         return fig
 
+    # PERF: round floats so the serialized chart JSON carries 3 decimals, not
+    # 15 sig-figs -- a big payload reduction with no visible difference.
+    df = df.copy()
+    _fcols = df.select_dtypes("float").columns
+    df[_fcols] = df[_fcols].round(3)
+    if "Volume" in df.columns:
+        df["Volume"] = df["Volume"].round(0)
+
     r = row_of["price"]
     fig.add_trace(
         go.Candlestick(x=df.index, open=df["Open"], high=df["High"],
@@ -213,18 +221,6 @@ def price_stack_chart(
                              line=dict(width=1.1, color="#f2a900", dash="dash"),
                              line_shape="hv", showlegend=True),
                   row=r, col=1)
-    # Star every bar that SETS a new rolling high (where the step line steps up).
-    new_high = run_high.gt(run_high.shift(1))
-    if len(new_high) > 0:
-        new_high.iloc[0] = True  # the first bar establishes the initial high
-    if new_high.any():
-        fig.add_trace(go.Scatter(
-            x=df.index[new_high.values], y=run_high[new_high.values],
-            mode="markers", name="New High",
-            marker=dict(symbol="star", size=11, color="#f2a900",
-                        line=dict(width=0.6, color="#8a6d00"))),
-            row=r, col=1)
-
     # Annotations on the price row. The marker sits at the latest value of the
     # running high (= the window peak, since the peak is already in the past).
     high_pos = df["Close"].idxmax()
@@ -233,45 +229,51 @@ def price_stack_chart(
                        text=f"Rolling High ${high_val:,.2f}", showarrow=True, arrowhead=2,
                        arrowcolor="#26a69a", ax=0, ay=-32, font=dict(color="#1b8a78", size=11),
                        bgcolor="rgba(255,255,255,0.7)")
-    last_close = float(df["Close"].iloc[-1])
-    dd_now = last_close / high_val - 1.0  # drawdown from the running high
-    # Close / drawdown shown as a static label in the empty top-right corner so
-    # it never overlaps the candles.
-    # Anchored to today's close with an arrow; text hangs down-LEFT into the
-    # empty area so it stays inside the plot (the last candle is at the right
-    # edge, so offsetting right would clip the box).
-    fig.add_annotation(
-        x=df.index[-1], y=last_close, row=r, col=1,
-        text=(f"{'Current' if market_open else 'Close'} ${last_close:,.2f}"
-              f"<br>DD from Rolling High {dd_now * 100:.1f}%"),
-        showarrow=True, arrowhead=2, arrowcolor="#c0392b", arrowwidth=1.3,
-        ax=-22, ay=55, xanchor="right", yanchor="top", align="right",
-        font=dict(color="#c0392b", size=11), bgcolor="rgba(255,255,255,0.75)")
 
-    # Buy-the-dip entry markers (green triangles just below the bar's low).
-    if show_entries:
-        entries = ind_mod.buy_dip_signal(df)
-        if not entries.empty and entries.any():
-            ex = df.index[entries.values]
-            ey = df["Low"][entries.values] * 0.985
-            fig.add_trace(go.Scatter(x=ex, y=ey, mode="markers", name="Entry (buy dip)",
-                                     marker=dict(symbol="triangle-up", size=11,
-                                                 color="#2e7d32",
-                                                 line=dict(width=0.5, color="white"))),
-                          row=r, col=1)
-
-    # Hanging-man candles: a small textbox with an arrow pointing down at each.
-    hm = ind_mod.hanging_man_signal(df)
-    if not hm.empty and hm.any():
-        hx = df.index[hm.values]
-        hy = df["High"][hm.values]
-        for x_, y_ in zip(hx, hy):
+    # Buy-the-dip entries + hammer / hanging-man / dragonfly-doji candles, all
+    # drawn as labelled textbox + arrow annotations pointing at the price bar.
+    #   buy dip (bullish)      -> green textbox + arrow BELOW the bar's low;
+    #   hanging man (bearish)  -> orange textbox + arrow ABOVE the bar's high;
+    #   hammer (bullish)       -> green textbox + arrow BELOW the bar's low;
+    #   dragonfly doji         -> blue textbox + arrow BELOW the bar's low.
+    # A dragonfly doji also satisfies the hammer shape, so label it once (as the
+    # doji) and drop it from the hammer/hanging sets to avoid double-labelling.
+    # PERF: textbox annotations are expensive, so only label bars in the
+    # initially-visible window (full history would be hundreds of annotations).
+    entries = (ind_mod.buy_dip_signal(df) if show_entries
+               else pd.Series(False, index=df.index))
+    overbought = ind_mod.overbought_signal(df) if show_entries \
+        else pd.Series(False, index=df.index)
+    hammer, hanging = ind_mod.hammer_family(df)
+    dragonfly = ind_mod.dragonfly_doji_signal(df)
+    hammer = hammer & ~dragonfly
+    hanging = hanging & ~dragonfly
+    if initial_xrange is not None:
+        win = (df.index >= initial_xrange[0]) & (df.index <= initial_xrange[1])
+        entries = entries & win
+        overbought = overbought & win
+        hammer = hammer & win
+        hanging = hanging & win
+        dragonfly = dragonfly & win
+    # ypad nudges the arrow anchor off the wick; ay offsets the text box. Top-side
+    # labels sit higher and bottom-side lower (larger |ay|) so co-located labels
+    # stack instead of overlapping: Overbought above Hanging Man, Buy dip below Hammer.
+    for sig, label, color, ycol, ay, ypad in [
+        (overbought, "Overbought", "#d32f2f", "High", -74, 1.03),  # red (trim/caution)
+        (entries, "Buy dip", "#2e7d32", "Low", 56, 1.0),          # dark green
+        (hanging, "Hanging Man", "#2962ff", "High", -46, 1.015),  # blue
+        (hammer, "Hammer", "#00b341", "Low", 28, 1.0),            # bright green
+        (dragonfly, "Dragonfly Doji", "#2962ff", "Low", 28, 1.0),  # blue
+    ]:
+        if sig.empty or not sig.any():
+            continue
+        for x_, y_ in zip(df.index[sig.values], df[ycol][sig.values]):
             fig.add_annotation(
-                x=x_, y=float(y_), row=r, col=1, text="Hanging Man",
-                showarrow=True, arrowhead=2, arrowcolor="#e67e22", arrowwidth=1.2,
-                ax=-30, ay=-24, font=dict(color="#b35e10", size=9),
-                bgcolor="rgba(255,255,255,0.8)", bordercolor="#e67e22",
-                borderwidth=0.6, borderpad=1)
+                x=x_, y=float(y_) * ypad, row=r, col=1, text=f"<b>{label}</b>",
+                showarrow=True, arrowhead=2, arrowcolor=color, arrowwidth=1.6,
+                ax=-34, ay=ay, font=dict(color=color, size=12),
+                bgcolor="rgba(255,255,255,0.9)", bordercolor=color,
+                borderwidth=1.2, borderpad=2)
 
     # Volume.
     rv = row_of["vol"]

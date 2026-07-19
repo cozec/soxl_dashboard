@@ -6,6 +6,7 @@ plotly>=5.20
 pyyaml>=6.0
 pyarrow>=14.0
 pytest>=8.0
+watchdog>=3.0  # enables reliable Streamlit hot-reload on source-file changes
 # Optional but recommended: exact, self-updating NYSE trading calendar
 # (holidays + early closes) for the market-open check. The app falls back to a
 # built-in holiday list if this is not installed.

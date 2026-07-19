@@ -223,22 +223,16 @@ def buy_dip_signal(df: pd.DataFrame) -> pd.Series:
     return (uptrend & (lower_tag | ma50_cross)).fillna(False)
 
 
-def hanging_man_signal(
+def hammer_shape(
     df: pd.DataFrame,
     body_max: float = 0.35,
     lower_min_body: float = 2.0,
     lower_min_range: float = 0.5,
-    upper_max: float = 0.20,
-    trend_lookback: int = 10,
+    upper_max: float = 0.30,
 ) -> pd.Series:
-    """Boolean Series flagging hanging-man candles.
-
-    Shape: small real body near the TOP of the range, a long lower shadow
-    (>= 2x the body and >= half the range), and little/no upper shadow, occurring
-    after an advance (close above where it was ``trend_lookback`` bars ago). The
-    same shape after a decline would be a bullish 'hammer'; the uptrend filter is
-    what makes it a (bearish) hanging man. Causal -- only closed bars.
-    """
+    """Boolean Series for the hammer/hanging-man SHAPE (context-independent):
+    small real body near the top of the range, a long lower shadow (>= 2x the
+    body and >= half the range), and little/no upper shadow. Causal."""
     if df is None or df.empty:
         idx = df.index if df is not None else None
         return pd.Series([], dtype=bool, index=idx)
@@ -251,8 +245,83 @@ def hanging_man_signal(
     small_body = body <= body_max * rng
     long_lower = (lower >= lower_min_body * body) & (lower >= lower_min_range * rng)
     short_upper = upper <= upper_max * rng
-    uptrend = c > c.shift(trend_lookback)
-    return (valid & small_body & long_lower & short_upper & uptrend).fillna(False)
+    return (valid & small_body & long_lower & short_upper).fillna(False)
+
+
+def hammer_family(df: pd.DataFrame, prior_lookback: int = 5):
+    """Split the hammer SHAPE by the trend leading INTO the candle.
+
+    Returns ``(hammer, hanging_man)`` boolean Series with the SAME shape:
+      * hammer (bullish) -- the prior few bars were falling into it;
+      * hanging_man (bearish) -- the prior few bars were rising into it.
+    The trend is measured from the *previous* close vs ``prior_lookback`` bars
+    before that, so the candle itself doesn't bias the classification. Causal.
+    """
+    shape = hammer_shape(df)
+    if shape.empty:
+        empty = shape
+        return empty, empty
+    c = df["Close"]
+    prior = c.shift(1) - c.shift(prior_lookback + 1)
+    hammer = (shape & (prior < 0)).fillna(False)
+    hanging_man = (shape & (prior >= 0)).fillna(False)
+    return hammer, hanging_man
+
+
+def hanging_man_signal(df: pd.DataFrame) -> pd.Series:
+    """Bearish hanging man (shape after a rise into the candle)."""
+    return hammer_family(df)[1]
+
+
+def hammer_signal(df: pd.DataFrame) -> pd.Series:
+    """Bullish hammer (shape after a fall into the candle)."""
+    return hammer_family(df)[0]
+
+
+def dragonfly_doji_signal(
+    df: pd.DataFrame,
+    body_max: float = 0.05,
+    lower_min_range: float = 0.5,
+    lower_over_upper: float = 2.0,
+) -> pd.Series:
+    """Boolean Series for the dragonfly-doji SHAPE: an (almost) non-existent
+    real body sitting at the top of the range, with a long lower shadow that
+    dominates a small upper shadow. A classic indecision / bullish-reversal
+    candle when it appears after a decline. Causal.
+
+    Distinct from a hammer by the body: a hammer has a small but real body,
+    a dragonfly doji has effectively none (open ~= close)."""
+    if df is None or df.empty:
+        idx = df.index if df is not None else None
+        return pd.Series([], dtype=bool, index=idx)
+    o, h, l, c = df["Open"], df["High"], df["Low"], df["Close"]
+    rng = (h - l)
+    body = (c - o).abs()
+    upper = h - c.where(c >= o, o)          # high - max(open, close)
+    lower = o.where(o <= c, c) - l          # min(open, close) - low
+    valid = rng > 0
+    doji_body = body <= body_max * rng
+    long_lower = lower >= lower_min_range * rng
+    lower_dominates = lower >= lower_over_upper * upper
+    return (valid & doji_body & long_lower & lower_dominates).fillna(False)
+
+
+def overbought_signal(df: pd.DataFrame, rsi_overbought: float = 75.0) -> pd.Series:
+    """Boolean Series flagging an overextended 'trim / caution' setup: the close
+    crosses UP through the upper Bollinger Band while RSI is overbought.
+
+    Historically only a weak, short-lived (~1 week) mean-reversion edge on SOXL
+    -- and it does NOT dodge the deep drawdowns (see scripts/backtest_bbands.py
+    and scripts/backtest_strategy.py), so treat it as a caution flag, not a hard
+    sell. Causal: uses only closed bars."""
+    needed = {"Close", "bb_upper", "rsi"}
+    if df is None or df.empty or not needed.issubset(df.columns):
+        idx = df.index if df is not None else None
+        return pd.Series([], dtype=bool, index=idx)
+    close = df["Close"]
+    upper = df["bb_upper"]
+    cross_up = (close.shift(1) <= upper.shift(1)) & (close > upper)
+    return (cross_up & (df["rsi"] > rsi_overbought)).fillna(False)
 
 
 def latest_entry(df: pd.DataFrame) -> Dict[str, Any]:
