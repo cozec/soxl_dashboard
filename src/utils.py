@@ -78,6 +78,7 @@ def _default_config() -> Dict[str, Any]:
             ["SMH (1x)", "SMH"], ["SOXL (3x)", "SOXL"], ["S&P500", "SPY"],
             ["QQQ", "QQQ"], ["TQQQ (3x)", "TQQQ"], ["MU", "MU"],
             ["SNDK", "SNDK"], ["MRVL", "MRVL"], ["INTC", "INTC"],
+            ["NFLX", "NFLX"],
         ],
         "notifier": {
             "recipient": "",

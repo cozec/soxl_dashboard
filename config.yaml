@@ -74,6 +74,7 @@ tabs:
   - ["SNDK", "SNDK"]
   - ["MRVL", "MRVL"]
   - ["INTC", "INTC"]
+  - ["NFLX", "NFLX"]
 
 # Email notifier (src/notifier.py; scheduled via launchd/*.plist).
 #   --check  near close: emails ONLY if a buy-dip/overbought signal fired
