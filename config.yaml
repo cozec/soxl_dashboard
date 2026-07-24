@@ -28,7 +28,7 @@ timeframes:
   "5Y / 1wk":  {period: "5y",  interval: "1wk", intraday: false}
 
 # Moving-average periods (in candles/bars of the selected timeframe).
-moving_averages: [20, 50, 200]
+moving_averages: [20, 50, 100, 200]
 
 # Indicator parameters.
 indicators:

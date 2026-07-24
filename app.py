@@ -307,8 +307,8 @@ for the next bar to confirm.*
 
 #### 🧮 Indicators
 
-- **MA 20 / 50 / 200** — simple **moving averages** of the closing price over
-  20/50/200 bars. Price above all three = uptrend; the 200-day is the key
+- **MA 20 / 50 / 100 / 200** — simple **moving averages** of the closing price
+  over 20/50/100/200 bars. Price above all of them = uptrend; the 200-day is the key
   long-term trend line.
 - **RSI 14** — **Relative Strength Index** (0–100) momentum oscillator.
   > 70 = overbought, < 30 = oversold.
@@ -510,8 +510,10 @@ def _indicator_table(snap: Dict[str, Any], risk: Dict[str, Any]) -> pd.DataFrame
         return snap.get(k)
     rows = [
         ("Price", utils.fmt_price(g("Close"))),
-        ("MA 20 / 50 / 200", f"{utils.fmt_price(g('sma_20'))} / "
-                              f"{utils.fmt_price(g('sma_50'))} / {utils.fmt_price(g('sma_200'))}"),
+        ("MA 20 / 50 / 100 / 200", f"{utils.fmt_price(g('sma_20'))} / "
+                                   f"{utils.fmt_price(g('sma_50'))} / "
+                                   f"{utils.fmt_price(g('sma_100'))} / "
+                                   f"{utils.fmt_price(g('sma_200'))}"),
         ("MA20 slope", utils.fmt_pct(g("sma_20_slope"))),
         ("RSI 14", _num(g("rsi"))),
         ("MACD / Signal", f"{_num(g('macd'))} / {_num(g('macd_signal'))}"),

@@ -14,7 +14,7 @@ from plotly.subplots import make_subplots
 from . import drawdown as dd_mod
 from . import indicators as ind_mod
 
-_MA_COLORS = {20: "#1f77b4", 50: "#ff7f0e", 200: "#9467bd"}
+_MA_COLORS = {20: "#1f77b4", 50: "#ff7f0e", 100: "#2ca02c", 200: "#9467bd"}
 
 
 def _rangebreaks(df: pd.DataFrame, intraday: bool) -> List[dict]:

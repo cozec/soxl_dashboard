@@ -53,7 +53,7 @@ def _default_config() -> Dict[str, Any]:
             "1Y / 1d": {"period": "1y", "interval": "1d", "intraday": False},
             "5Y / 1wk": {"period": "5y", "interval": "1wk", "intraday": False},
         },
-        "moving_averages": [20, 50, 200],
+        "moving_averages": [20, 50, 100, 200],
         "indicators": {
             "rsi_period": 14,
             "macd_fast": 12,
